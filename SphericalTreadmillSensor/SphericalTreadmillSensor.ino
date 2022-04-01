@@ -6,15 +6,16 @@
 #include <SPI.h>
 
 //Bytes that serve as headers to Serial data to let computer know what it is receiving
+const byte TERMINATE_SIGNAL = '!';
 const byte DAQ_SYNC_IDENTIFIER = '1';
 const byte ODOR_ON_IDENTIFIER = '2';
 const byte ODOR_OFF_IDENTIFIER = '3';
 const byte OPTICAL_SENSOR_DATA_IDENTIFIER = '4';
 
 //Optical sensor register numbers
-const byte MOTION_REGISTER = 0x02;
-const byte DELTA_X_REGISTER = 0x03;
-const byte DELTA_Y_REGISTER = 0x04;
+const unsigned char MOTION_REGISTER = 0x02;
+const unsigned char DELTA_X_REGISTER = 0x03;
+const unsigned char DELTA_Y_REGISTER = 0x04;
 
 //Bit header to tell sensor if serial request is a read or write
 const byte SPI_READ = 0x00;
@@ -28,10 +29,11 @@ const int WRITE_WRITE_DELAY = 30;
 //Pins for timing signal inputs
 const int DAQ_SYNC_PIN = 2;
 const int ODOR_SIGNAL_PIN = 3;
+const int EXPERIMENT_OVER_PIN = 4;
 
 //Pins for SPI interface with optical sensor peripheral
-const int OPTICAL_SENSOR_CHIP_SELECT_PIN = 28;
-const int OPTICAL_SENSOR_RESET_PIN = 27;
+const int OPTICAL_SENSOR_CHIP_SELECT_PIN = 27;
+const int OPTICAL_SENSOR_RESET_PIN = 28;
 const int PRIMARY_SDO_PIN = 11;
 const int ALTERNATE_SDO_PIN = 7;
 
@@ -44,9 +46,11 @@ bool odorOn;                    //Is odorant currently being released?
 volatile bool odorOnTimeReady;  //Is odorOnTime updated but not written to Serial?
 volatile bool odorOffTimeReady; //Is odorOffTime updated but not written to Serial?
 
-byte motionUpdate;              //Has position changed since last check?
-byte deltaX;                    //Change in x value, from optical sensor (2's comp)
-byte deltaY;                    //Change in y value, from optical sensor (2's comp)
+volatile bool experimentOver;
+
+unsigned char motionUpdate;              //Has position changed since last check?
+unsigned char deltaX;                    //Change in x value, from optical sensor (2's comp)
+unsigned char deltaY;                    //Change in y value, from optical sensor (2's comp)
 unsigned long motionTimestamp;  //Stores timestamp of last motion update
 
 void setup() {
@@ -54,6 +58,7 @@ void setup() {
   
   pinMode(DAQ_SYNC_PIN, INPUT);
   pinMode(ODOR_SIGNAL_PIN, INPUT);
+  pinMode(EXPERIMENT_OVER_PIN, INPUT);
   pinMode(OPTICAL_SENSOR_CHIP_SELECT_PIN, OUTPUT);
   pinMode(OPTICAL_SENSOR_RESET_PIN, OUTPUT);
 
@@ -61,7 +66,9 @@ void setup() {
 
   attachInterrupt(digitalPinToInterrupt(DAQ_SYNC_PIN), updateDaqSyncTime, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ODOR_SIGNAL_PIN), updateOdorTime, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(EXPERIMENT_OVER_PIN), endExperiment, RISING);
 
+  experimentOver = false;
   odorOn = false;
   daqSyncTimeReady = false;
   odorOnTimeReady = false;
@@ -73,54 +80,75 @@ void setup() {
 }
 
 void loop() {
-  //Check if TTL timestamps are updated, and write to Serial if so
-  if(daqSyncTimeReady)
-  {
-    Serial.write(DAQ_SYNC_IDENTIFIER); // 1 byte
-    Serial.write(daqSyncTime);         // 4 bytes
-    daqSyncTimeReady = false;
-  }
-  if(odorOnTimeReady)
-  {
-    Serial.write(ODOR_ON_IDENTIFIER);  // 1 byte
-    Serial.write(odorOnTime);          // 4 bytes
-    odorOnTimeReady = false;
-  }
-  if(odorOffTimeReady)
-  {
-    Serial.write(ODOR_OFF_IDENTIFIER);  // 1 byte
-    Serial.write(odorOffTime);          // 4 bytes
-    odorOffTimeReady = false;
-  }
 
-  //Check for optical sensor updates over SPI
-  //Read Motion register
-  motionUpdate = readSPI(MOTION_REGISTER) >> 7; //Get motion bit (bit 7)
-
-  //If motion occurred, read Delta_X and Delta_Y registers
-  if(motionUpdate)
+  if(!experimentOver)
   {
-   deltaX = readSPI(DELTA_X_REGISTER);
-   deltaY = readSPI(DELTA_Y_REGISTER);
-   motionTimestamp = micros();
+    //Check if TTL timestamps are updated, and write to Serial if so
+    if(daqSyncTimeReady)
+    {
+      Serial.write(DAQ_SYNC_IDENTIFIER); // 1 byte
+      Serial.write((daqSyncTime & 0xFF000000) >> 24); // 4 bytes
+      Serial.write((daqSyncTime & 0x00FF0000) >> 16);
+      Serial.write((daqSyncTime & 0x0000FF00) >> 8);
+      Serial.write(daqSyncTime & 0x000000FF);
+      daqSyncTimeReady = false;
+    }
+    if(odorOnTimeReady)
+    {
+      Serial.write(ODOR_ON_IDENTIFIER);  // 1 byte
+      Serial.write((odorOnTime & 0xFF000000) >> 24); // 4 bytes
+      Serial.write((odorOnTime & 0x00FF0000) >> 16);
+      Serial.write((odorOnTime & 0x0000FF00) >> 8);
+      Serial.write(odorOnTime & 0x000000FF);
+      odorOnTimeReady = false;
+    }
+    if(odorOffTimeReady)
+    {
+      Serial.write(ODOR_OFF_IDENTIFIER);  // 1 byte
+      Serial.write((odorOffTime & 0xFF000000) >> 24); // 4 bytes
+      Serial.write((odorOffTime & 0x00FF0000) >> 16);
+      Serial.write((odorOffTime & 0x0000FF00) >> 8);
+      Serial.write(odorOffTime & 0x000000FF);
+      odorOffTimeReady = false;
+    }
+  
+    //Check for optical sensor updates over SPI
+    //Read Motion register
+    motionUpdate = readSPI(MOTION_REGISTER) >> 7; //Get motion bit (bit 7)
+    
+    //If motion occurred, read Delta_X and Delta_Y registers
+    if(motionUpdate)
+    {
+     deltaX = readSPI(DELTA_X_REGISTER);
+     deltaY = readSPI(DELTA_Y_REGISTER);
+     motionTimestamp = micros();
+    }
+  
+    //Write optical sensor data to Serial
+    if(motionUpdate)
+    {
+      Serial.write(OPTICAL_SENSOR_DATA_IDENTIFIER); // 1 byte
+      Serial.write(deltaX);                         // 1 byte
+      Serial.write(deltaY);                         // 1 byte
+      Serial.write((motionTimestamp & 0xFF000000) >> 24); // 4 bytes
+      Serial.write((motionTimestamp & 0x00FF0000) >> 16);
+      Serial.write((motionTimestamp & 0x0000FF00) >> 8);
+      Serial.write(motionTimestamp & 0x000000FF);
+    }
   }
-
-  //Write optical sensor data to Serial
-  if(motionUpdate)
+  else
   {
-    Serial.write(OPTICAL_SENSOR_DATA_IDENTIFIER); // 1 byte
-    Serial.write(deltaX);                         // 1 byte
-    Serial.write(deltaY);                         // 1 byte
-    Serial.write(motionTimestamp);                // 4 bytes
+    Serial.write(TERMINATE_SIGNAL);
+    while(true){}
   }
 }
 
-byte readSPI(byte targetRegister)
+unsigned char readSPI(unsigned char targetRegister)
 {
-  byte dataReceived;
+  unsigned char dataReceived;
   SPI.beginTransaction(SPISettings(3000000, MSBFIRST, SPI_MODE3));
   digitalWrite(OPTICAL_SENSOR_CHIP_SELECT_PIN, LOW);
-  dataReceived = SPI.transfer(targetRegister | SPI_READ);
+  dataReceived = SPI.transfer(targetRegister);
   delayMicroseconds(READ_DELAY);
   SPI.setMOSI(ALTERNATE_SDO_PIN); //Set output pin to alternate to allow proper reading
   dataReceived = SPI.transfer(0x00);
@@ -155,4 +183,9 @@ void updateOdorTime()
   }
 
   odorOn = !odorOn;
+}
+
+void endExperiment()
+{
+  experimentOver = true;
 }
