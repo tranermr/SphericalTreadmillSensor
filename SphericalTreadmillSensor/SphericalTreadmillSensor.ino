@@ -5,6 +5,12 @@
 
 #include <SPI.h>
 
+
+//USER SETTINGS
+
+//Microsecond delay between sensor motion checks
+const unsigned long SENSOR_DELAY_TIME = 100; //Microseconds
+
 //Bytes that serve as headers to Serial data to let computer know what it is receiving
 const byte TERMINATE_SIGNAL = '!';
 const byte DAQ_SYNC_IDENTIFIER = '1';
@@ -46,7 +52,9 @@ bool odorOn;                    //Is odorant currently being released?
 volatile bool odorOnTimeReady;  //Is odorOnTime updated but not written to Serial?
 volatile bool odorOffTimeReady; //Is odorOffTime updated but not written to Serial?
 
-volatile bool experimentOver;
+volatile bool experimentOver;   //Set by TTL signal to EXPERIMENT_OVER_PIN
+
+unsigned long lastSensorCheckTime;       //For delta timing with SENSOR_DELAY_TIME
 
 unsigned char motionUpdate;              //Has position changed since last check?
 unsigned char deltaX;                    //Change in x value, from optical sensor (2's comp)
@@ -111,29 +119,31 @@ void loop() {
       Serial.write(odorOffTime & 0x000000FF);
       odorOffTimeReady = false;
     }
-  
-    //Check for optical sensor updates over SPI
-    //Read Motion register
-    motionUpdate = readSPI(MOTION_REGISTER) >> 7; //Get motion bit (bit 7)
+
+    motionTimestamp = micros();
     
-    //If motion occurred, read Delta_X and Delta_Y registers
-    if(motionUpdate)
+    if(motionTimestamp - lastSensorCheckTime > SENSOR_DELAY_TIME ||
+       motionTimestamp < lastSensorCheckTime) //Naive overflow protection
     {
-     deltaX = readSPI(DELTA_X_REGISTER);
-     deltaY = readSPI(DELTA_Y_REGISTER);
-     motionTimestamp = micros();
-    }
-  
-    //Write optical sensor data to Serial
-    if(motionUpdate)
-    {
-      Serial.write(OPTICAL_SENSOR_DATA_IDENTIFIER); // 1 byte
-      Serial.write(deltaX);                         // 1 byte
-      Serial.write(deltaY);                         // 1 byte
-      Serial.write((motionTimestamp & 0xFF000000) >> 24); // 4 bytes
-      Serial.write((motionTimestamp & 0x00FF0000) >> 16);
-      Serial.write((motionTimestamp & 0x0000FF00) >> 8);
-      Serial.write(motionTimestamp & 0x000000FF);
+      //Check for optical sensor updates over SPI
+      //Read Motion register
+      motionUpdate = readSPI(MOTION_REGISTER) >> 7; //Get motion bit (bit 7)
+      
+      //If motion occurred, read Delta_X and Delta_Y registers
+      if(motionUpdate)
+      {
+        deltaX = readSPI(DELTA_X_REGISTER);
+        deltaY = readSPI(DELTA_Y_REGISTER);
+
+        //Write optical sensor data to Serial
+        Serial.write(OPTICAL_SENSOR_DATA_IDENTIFIER); // 1 byte
+        Serial.write(deltaX);                         // 1 byte
+        Serial.write(deltaY);                         // 1 byte
+        Serial.write((motionTimestamp & 0xFF000000) >> 24); // 4 bytes
+        Serial.write((motionTimestamp & 0x00FF0000) >> 16);
+        Serial.write((motionTimestamp & 0x0000FF00) >> 8);
+        Serial.write(motionTimestamp & 0x000000FF);
+      } 
     }
   }
   else
