@@ -38,7 +38,8 @@ const int ODOR_SIGNAL_PIN = 3;
 const int EXPERIMENT_OVER_PIN = 4;
 
 //Pins for SPI interface with optical sensor peripheral
-const int OPTICAL_SENSOR_CHIP_SELECT_PIN = 27;
+const int OPTICAL_SENSOR_1_CHIP_SELECT_PIN = 27;
+const int OPTICAL_SENSOR_2_CHIP_SELECT_PIN = 26;
 const int OPTICAL_SENSOR_RESET_PIN = 28;
 const int PRIMARY_SDO_PIN = 11;
 const int ALTERNATE_SDO_PIN = 7;
@@ -57,8 +58,10 @@ volatile bool experimentOver;   //Set by TTL signal to EXPERIMENT_OVER_PIN
 unsigned long lastSensorCheckTime;       //For delta timing with SENSOR_DELAY_TIME
 
 unsigned char motionUpdate;              //Has position changed since last check?
-unsigned char deltaX;                    //Change in x value, from optical sensor (2's comp)
-unsigned char deltaY;                    //Change in y value, from optical sensor (2's comp)
+unsigned char deltaX1;                    //Change in x value, from optical sensor 1 (2's comp)
+unsigned char deltaY1;                    //Change in y value, from optical sensor 1 (2's comp)
+unsigned char deltaX2;                    //Change in x value, from optical sensor 2 (2's comp)
+unsigned char deltaY2;                    //Change in y value, from optical sensor 2 (2's comp)
 unsigned long motionTimestamp;  //Stores timestamp of last motion update
 
 void setup() {
@@ -67,10 +70,13 @@ void setup() {
   pinMode(DAQ_SYNC_PIN, INPUT);
   pinMode(ODOR_SIGNAL_PIN, INPUT);
   pinMode(EXPERIMENT_OVER_PIN, INPUT);
-  pinMode(OPTICAL_SENSOR_CHIP_SELECT_PIN, OUTPUT);
+  pinMode(OPTICAL_SENSOR_1_CHIP_SELECT_PIN, OUTPUT);
+  pinMode(OPTICAL_SENSOR_2_CHIP_SELECT_PIN, OUTPUT);
   pinMode(OPTICAL_SENSOR_RESET_PIN, OUTPUT);
 
   digitalWrite(OPTICAL_SENSOR_RESET_PIN, HIGH); //Keep reset pin high to enable sensor
+  digitalWrite(OPTICAL_SENSOR_1_CHIP_SELECT_PIN, HIGH);
+  digitalWrite(OPTICAL_SENSOR_2_CHIP_SELECT_PIN, HIGH);
 
   attachInterrupt(digitalPinToInterrupt(DAQ_SYNC_PIN), updateDaqSyncTime, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ODOR_SIGNAL_PIN), updateOdorTime, CHANGE);
@@ -126,19 +132,43 @@ void loop() {
        motionTimestamp < lastSensorCheckTime) //Naive overflow protection
     {
       //Check for optical sensor updates over SPI
-      //Read Motion register
-      motionUpdate = readSPI(MOTION_REGISTER) >> 7; //Get motion bit (bit 7)
+      //Read Motion register from sensor 1
+      motionUpdate = readSPI(MOTION_REGISTER, OPTICAL_SENSOR_1_CHIP_SELECT_PIN) >> 7; //Get motion bit (bit 7)
       
       //If motion occurred, read Delta_X and Delta_Y registers
       if(motionUpdate)
       {
-        deltaX = readSPI(DELTA_X_REGISTER);
-        deltaY = readSPI(DELTA_Y_REGISTER);
+        deltaX1 = readSPI(DELTA_X_REGISTER, OPTICAL_SENSOR_1_CHIP_SELECT_PIN);
+        deltaY1 = readSPI(DELTA_Y_REGISTER, OPTICAL_SENSOR_1_CHIP_SELECT_PIN);
+      }
+      else
+      {
+        deltaX1 = 0;
+        deltaY1 = 0;
+      }
+      
+      //Read Motion register from sensor 2
+      motionUpdate = readSPI(MOTION_REGISTER, OPTICAL_SENSOR_2_CHIP_SELECT_PIN) >> 7; //Get motion bit (bit 7)
 
+      //If motion occurred, read Delta_X and Delta_Y registers
+      if(motionUpdate)
+      {
+        deltaX2 = readSPI(DELTA_X_REGISTER, OPTICAL_SENSOR_1_CHIP_SELECT_PIN);
+        deltaY2 = readSPI(DELTA_Y_REGISTER, OPTICAL_SENSOR_1_CHIP_SELECT_PIN);
+      }
+      else
+      {
+        deltaX2 = 0;
+        deltaY2 = 0;
+      }
+      if(deltaX1+deltaY1+deltaX2+deltaY2)
+      {
         //Write optical sensor data to Serial
         Serial.write(OPTICAL_SENSOR_DATA_IDENTIFIER); // 1 byte
-        Serial.write(deltaX);                         // 1 byte
-        Serial.write(deltaY);                         // 1 byte
+        Serial.write(deltaX1);                         // 1 byte
+        Serial.write(deltaY1);                         // 1 byte
+        Serial.write(deltaX2);                         // 1 byte
+        Serial.write(deltaY2);                         // 1 byte
         Serial.write((motionTimestamp & 0xFF000000) >> 24); // 4 bytes
         Serial.write((motionTimestamp & 0x00FF0000) >> 16);
         Serial.write((motionTimestamp & 0x0000FF00) >> 8);
@@ -153,18 +183,18 @@ void loop() {
   }
 }
 
-unsigned char readSPI(unsigned char targetRegister)
+unsigned char readSPI(unsigned char targetRegister, int chipSelectPin)
 {
   unsigned char dataReceived;
   SPI.beginTransaction(SPISettings(3000000, MSBFIRST, SPI_MODE3));
-  digitalWrite(OPTICAL_SENSOR_CHIP_SELECT_PIN, LOW);
+  digitalWrite(chipSelectPin, LOW);
   dataReceived = SPI.transfer(targetRegister);
   delayMicroseconds(READ_DELAY);
   SPI.setMOSI(ALTERNATE_SDO_PIN); //Set output pin to alternate to allow proper reading
   dataReceived = SPI.transfer(0x00);
   SPI.setMOSI(PRIMARY_SDO_PIN); //Reset output pin
   delayMicroseconds(READ_DELAY);
-  digitalWrite(OPTICAL_SENSOR_CHIP_SELECT_PIN, HIGH);
+  digitalWrite(chipSelectPin, HIGH);
   SPI.endTransaction();
   return dataReceived;
 }
