@@ -14,15 +14,19 @@ daq_sync_timestamps = []
 odor_on_timestamps = []
 odor_off_timestamps = []
 motion_timestamps = []
-delta_xs = []
-delta_ys = []
+delta_x1s = []
+delta_y1s = []
+delta_x2s = []
+delta_y2s = []
 
 output_dict = {"DAQ_Times": daq_sync_timestamps,
                "Odor_On_Times": odor_on_timestamps,
                "Odor_Off_Times": odor_off_timestamps,
                "Motion_Times": motion_timestamps,
-               "Delta_Xs": delta_xs,
-               "Delta_Ys": delta_ys}
+               "Delta_X1s": delta_x1s,
+               "Delta_Y1s": delta_y1s,
+               "Delta_X2s": delta_x2s,
+               "Delta_Y2s": delta_y2s}
 
 #Shift timestamps to start at 0 and correct any overflows
 def adjustTimestamps(timestamps):
@@ -50,7 +54,7 @@ with serial.Serial(serialPort, baudRate) as ser:
     print("Opened connection on port " + serialPort)
     while ser.is_open:
         if ser.in_waiting:
-            print(ser.in_waiting)
+            #print(ser.in_waiting)
             identifier = ser.read(1).decode("utf-8")
             print(identifier)
             if identifier == DAQ_SYNC_IDENTIFIER:
@@ -67,10 +71,14 @@ with serial.Serial(serialPort, baudRate) as ser:
                     int.from_bytes(ser.read(4), "big", signed=False)) #Timestamp
             elif identifier == OPTICAL_SENSOR_DATA_IDENTIFIER:
                 #Write to movement timestamp, delta x, and delta y columns
-                delta_xs.append(
-                    int.from_bytes(ser.read(1), "big", signed=True)) #Delta X
-                delta_ys.append(
-                    int.from_bytes(ser.read(1), "big", signed=True)) #Delta Y
+                delta_x1s.append(
+                    int.from_bytes(ser.read(1), "big", signed=True)) #Delta X1
+                delta_y1s.append(
+                    int.from_bytes(ser.read(1), "big", signed=True)) #Delta Y1
+                delta_x2s.append(
+                    int.from_bytes(ser.read(1), "big", signed=True)) #Delta X2
+                delta_y2s.append(
+                    int.from_bytes(ser.read(1), "big", signed=True)) #Delta Y2
                 motion_timestamps.append(
                     int.from_bytes(ser.read(4), "big", signed=False)) #Timestamp
             elif identifier == TERMINATE_SIGNAL:
