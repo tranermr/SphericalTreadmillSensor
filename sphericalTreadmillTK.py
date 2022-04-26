@@ -30,6 +30,9 @@ position_x = []
 position_y = []
 position_z = []
 
+new_position_x = []
+new_position_y = []
+
 output_dict = {"DAQ_Times": daq_sync_timestamps,
                "Odor_On_Times": odor_on_timestamps,
                "Odor_Off_Times": odor_off_timestamps,
@@ -39,7 +42,7 @@ output_dict = {"DAQ_Times": daq_sync_timestamps,
                "Position_Z": position_z}
 
 window = Tk()
-window.geometry("1080x720")
+window.geometry("1300x500")
 
 capture = cv2.VideoCapture(0)
 
@@ -72,14 +75,16 @@ def sensorReadsToPositions():
     deltaY = COS_45*(deltaY1+deltaY2)
     deltaZ = COS_45*(deltaY1-deltaY2)
 
-    #Append deltas to previou position
+    #Append deltas to previous position
     lastX += deltaX
     lastY += deltaY
     lastZ += deltaZ
 
     #Save values
     position_x.append(lastX)
+    new_position_x.append(lastX)
     position_y.append(lastY)
+    new_position_y.append(lastY)
     position_z.append(lastZ)
 
     #Reset sensor counters
@@ -145,16 +150,22 @@ def liveFeed():
         cameraLabel.configure(image=imgtk)
     cameraLabel.after(20, liveFeed) #50 FPS
 
-def liveData():
-    plt.cla()
-    plt.plot(xPositions, yPositions)
+def liveDataSetup():
     plt.title("Movement")
     plt.xlabel("Left <-> Right")
     plt.ylabel("Backwards <-> Forwards")
-    dataTmpFile = io.BytesIO()
-    plt.savefig(dataTmpFile)
-    dataTmpFile.seek(0)
-    im = Image.open(dataTmpFile)
+    dataLabel.after(20, liveData)
+
+def liveData():
+    plt.plot(new_position_x, new_position_y, 'bo')
+    new_position_x.clear()
+    new_position_y.clear()
+    
+    fig = plt.gcf()
+    fig.canvas.draw()
+    im = Image.frombytes('RGB',
+                         fig.canvas.get_width_height(),
+                         fig.canvas.tostring_rgb())
     imgtk = ImageTk.PhotoImage(image=im)
     dataLabel.imgtk = imgtk
     dataLabel.configure(image=imgtk)
@@ -177,7 +188,7 @@ def main():
     #Start GUI threads
     checkData()
     liveFeed()
-    liveData()
+    liveDataSetup()
     window.mainloop()
 
     #Cleanup
