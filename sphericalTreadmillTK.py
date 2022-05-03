@@ -9,6 +9,8 @@ import io
 import serial
 from serial.tools import list_ports
 import scipy.io
+import threading
+import time
 
 ### Serial setup
 
@@ -21,6 +23,8 @@ OPTICAL_SENSOR_DATA_IDENTIFIER = '4'
 ser = None
 identifier = '0'
 experimentActive = True
+serialDone = False
+
 
 daq_sync_timestamps = []
 odor_on_timestamps = []
@@ -43,6 +47,7 @@ output_dict = {"DAQ_Times": daq_sync_timestamps,
 
 window = Tk()
 window.geometry("1300x500")
+windowActive = True
 
 capture = cv2.VideoCapture(0)
 
@@ -57,7 +62,7 @@ serialThreadLabel = Label(window)
 MAX_VALUE = 4294967295
 COS_45 = 0.70710678118
 
-TIMESTEP = 20000 #Microseconds
+TIMESTEP = 200000 #Microseconds
 lastTimestamp = 0
 
 lastX = 0
@@ -69,23 +74,42 @@ deltaY1 = 0
 deltaX2 = 0
 deltaY2 = 0
 
+MINIMUM_DELTA = 10
+
 def sensorReadsToPositions():
+    global deltaX1, deltaY1, deltaX2, deltaY2, lastX, lastY, lastZ
     #Translate sensor reads to standard basis
     deltaX = 0.5*(deltaX1+deltaX2)
     deltaY = COS_45*(deltaY1+deltaY2)
     deltaZ = COS_45*(deltaY1-deltaY2)
 
-    #Append deltas to previous position
-    lastX += deltaX
-    lastY += deltaY
-    lastZ += deltaZ
+    #V2
+    #deltaX = COS_45*(deltaX1+deltaX2)
+    #deltaY = 0.5*(deltaY1+deltaY2)
+    #deltaZ = COS_45*(deltaY1-deltaY2)
 
-    #Save values
-    position_x.append(lastX)
-    new_position_x.append(lastX)
-    position_y.append(lastY)
-    new_position_y.append(lastY)
-    position_z.append(lastZ)
+    #Append deltas to previous position and save
+    if abs(deltaX) >= MINIMUM_DELTA:
+        lastX += deltaX
+        
+        
+
+    if abs(deltaY) >= MINIMUM_DELTA:
+        lastY += deltaY
+        
+        
+
+    if abs(deltaZ) >= MINIMUM_DELTA:
+        lastZ += deltaZ
+
+    if abs(deltaX) >= MINIMUM_DELTA or abs(deltaY) >= MINIMUM_DELTA:
+        new_position_x.append(lastX)
+        new_position_y.append(lastY)
+
+    if abs(deltaX) >= MINIMUM_DELTA or abs(deltaY) >= MINIMUM_DELTA or abs(deltaZ) >= MINIMUM_DELTA:
+        position_x.append(lastX)
+        position_y.append(lastY)
+        position_z.append(lastZ)
 
     #Reset sensor counters
     deltaX1 = 0
@@ -104,74 +128,94 @@ def adjustTimestamps(timestamps):
         timestamps[i] = timestamps[i]-initial_time + overflows*MAX_VALUE
 
 def checkData():
-    if ser.is_open and experimentActive:
-        if ser.in_waiting:
-            #print(ser.in_waiting)
-            identifier = ser.read(1).decode("utf-8")
-            #print(identifier)
-            if identifier == DAQ_SYNC_IDENTIFIER:
-                #Write to daq sync column
-                daq_sync_timestamps.append(
-                    int.from_bytes(ser.read(4), "big", signed=False)) #Timestamp
-            elif identifier == ODOR_ON_IDENTIFIER:
-                #Write to odor on column
-                odor_on_timestamps.append(
-                    int.from_bytes(ser.read(4), "big", signed=False)) #Timestamp
-            elif identifier == ODOR_OFF_IDENTIFIER:
-                #Write to odor off column
-                odor_off_timestamps.append(
-                    int.from_bytes(ser.read(4), "big", signed=False)) #Timestamp
-            elif identifier == OPTICAL_SENSOR_DATA_IDENTIFIER:
-                #Write to movement timestamp, delta x and delta y counters
-                timestamp = int.from_bytes(ser.read(4), "big", signed=False)
-                motion_timestamps.append(timestamp)
-                
-                deltaX1 += int.from_bytes(ser.read(1), "big", signed=True) #Delta X1
-                deltaY1 += int.from_bytes(ser.read(1), "big", signed=True) #Delta Y1
-                deltaX2 += int.from_bytes(ser.read(1), "big", signed=True) #Delta X2
-                deltaY2 += int.from_bytes(ser.read(1), "big", signed=True) #Delta Y2
-                
-                if timestamp - lastTimestamp > TIMESTEP:
-                    sensorReadsToPositions()
-                    lastTimestamp = timestamp
+    global experimentActive, deltaX1, deltaY1, deltaX2, deltaY2, lastTimestamp, serialDone
+    while(windowActive):
+        if ser.is_open and experimentActive:
+            if ser.in_waiting:
+                #print(ser.in_waiting)
+                try:
+                    identifier = ser.read(1).decode("utf-8")
+                    #print(identifier)
+                except:
+                    identifier = None
+                if identifier == DAQ_SYNC_IDENTIFIER:
+                    #Write to daq sync column
+                    daq_sync_timestamps.append(
+                        int.from_bytes(ser.read(4), "big", signed=False)) #Timestamp
+                    print("DAQ sync")
+                elif identifier == ODOR_ON_IDENTIFIER:
+                    #Write to odor on column
+                    odor_on_timestamps.append(
+                        int.from_bytes(ser.read(4), "big", signed=False)) #Timestamp
+                    print("Odor on")
+                elif identifier == ODOR_OFF_IDENTIFIER:
+                    #Write to odor off column
+                    odor_off_timestamps.append(
+                        int.from_bytes(ser.read(4), "big", signed=False)) #Timestamp
+                    print("Odor off")
+                elif identifier == OPTICAL_SENSOR_DATA_IDENTIFIER:
+                    #Write to movement timestamp, delta x and delta y counters
+                    timestamp = int.from_bytes(ser.read(4), "big", signed=False)
+                    motion_timestamps.append(timestamp)
+                    
+                    deltaX1 += int.from_bytes(ser.read(1), "big", signed=True) #Delta X1
+                    deltaY1 += int.from_bytes(ser.read(1), "big", signed=True) #Delta Y1
+                    deltaX2 += int.from_bytes(ser.read(1), "big", signed=True) #Delta X2
+                    deltaY2 += int.from_bytes(ser.read(1), "big", signed=True) #Delta Y2
+                    
+                    if timestamp - lastTimestamp > TIMESTEP or timestamp < lastTimestamp:
+                        sensorReadsToPositions()
+                        lastTimestamp = timestamp
 
-            elif identifier == TERMINATE_SIGNAL:
-                experimentActive = False
-    
-    serialThreadLabel.after(0, checkData) #Check for updates constantly
+                elif identifier == TERMINATE_SIGNAL:
+                    print("TERMINATE")
+                    experimentActive = False
+    serialDone = True
 
 def liveFeed():
-    ret, img = capture.read()
-    if ret:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        im = Image.fromarray(img)
-        imgtk = ImageTk.PhotoImage(image=im)
-        cameraLabel.imgtk = imgtk
-        cameraLabel.configure(image=imgtk)
-    cameraLabel.after(20, liveFeed) #50 FPS
+    global cameraLabel
+    while(windowActive):
+        time.sleep(0.02)
+        ret, img = capture.read()
+        if ret and windowActive:
+            try:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                im = Image.fromarray(img)
+                imgtk = ImageTk.PhotoImage(image=im)
+                cameraLabel.imgtk = imgtk
+                cameraLabel.configure(image=imgtk)
+            except:
+                print("Couldn't display image")
 
 def liveDataSetup():
     plt.title("Movement")
     plt.xlabel("Left <-> Right")
     plt.ylabel("Backwards <-> Forwards")
-    dataLabel.after(20, liveData)
 
 def liveData():
-    plt.plot(new_position_x, new_position_y, 'bo')
-    new_position_x.clear()
-    new_position_y.clear()
-    
-    fig = plt.gcf()
-    fig.canvas.draw()
-    im = Image.frombytes('RGB',
-                         fig.canvas.get_width_height(),
-                         fig.canvas.tostring_rgb())
-    imgtk = ImageTk.PhotoImage(image=im)
-    dataLabel.imgtk = imgtk
-    dataLabel.configure(image=imgtk)
-    dataLabel.after(20, liveData) #50 FPS
+    global dataLabel
+    while(windowActive):
+        time.sleep(0.02)
+        if(len(new_position_x) > 0):
+            plt.plot(new_position_x, new_position_y, 'bo')
+            new_position_x.clear()
+            new_position_y.clear()
+
+        if(windowActive):
+            try:
+                fig = plt.gcf()
+                fig.canvas.draw()
+                im = Image.frombytes('RGB',
+                                     fig.canvas.get_width_height(),
+                                     fig.canvas.tostring_rgb())
+                imgtk = ImageTk.PhotoImage(image=im)
+                dataLabel.imgtk = imgtk
+                dataLabel.configure(image=imgtk)
+            except:
+                print("Couldn't display plot")
 
 def main():
+    global ser, windowActive
     #Find available ports
     ports = list_ports.comports()
     ports = [p.name for p in ports]
@@ -184,16 +228,27 @@ def main():
         serialPort = input("Port: ")
     ser = serial.Serial(serialPort, 115200)
     print("Opened connection on port " + serialPort)
-    
-    #Start GUI threads
-    checkData()
-    liveFeed()
+
     liveDataSetup()
+    #updateLiveFeed()
+    
+    #Start threads
+    serialThread = threading.Thread(target=checkData)
+    cameraThread = threading.Thread(target=liveFeed)
+    plottingThread = threading.Thread(target=liveData)
+
+    serialThread.start()
+    cameraThread.start()
+    plottingThread.start()
+
     window.mainloop()
 
     #Cleanup
+    windowActive = False
     print("done")
     capture.release()
+    while not serialDone:
+        pass
     ser.close()
 
     #Adjust timestamps for overflow and alignment
